@@ -1,0 +1,90 @@
+---
+title: An R Markdown document converted from "StromalCell_integration.ipynb"
+output: html_document
+---
+
+# load data
+
+```{r}
+objList <- list.files('/project/sex_cancer/data/data_zenodo', pattern = 'obj', full.names = TRUE)
+objList
+```
+
+```{r}
+seuratList <- lapply(objList, function(x){readRDS(x)})
+names(seuratList) <- objList %>% gsub('/project/sex_cancer/data/data_zenodo/obj.', '', .) %>% gsub('.rds', '', .)
+```
+
+# extract intersect genes
+
+```{r}
+geneList <- lapply(seuratList, function(x){rownames(x)})
+geneList_all <- geneList %>% ext_list() %>% unique() 
+length(geneList_all) ## 65547 genes
+geneList_freq13 <- geneList %>% unlist %>% table() %>% as.data.frame() %>% subset(Freq == 13) %>% .[,1] %>% ext_list() 
+length(geneList_freq13) ## 13414 genes
+```
+
+# filter stromal cells
+
+```{r}
+seuratList_Stromal <- lapply(seuratList, function(obj){
+                                    obj %>% subset(SampleType == 'tumor') %>% subset(gCT == 'Stromal') %>% subset(feature = geneList_freq13)
+                             })
+names(seuratList_Stromal) <- names(seuratList_Stromal)
+lapply(seuratList_Stromal, function(x){ncol(x)}) %>% do.call(sum, .)
+seurat_Stromal <- merge(seuratList_Immune[[1]], seuratList_Immune[-1])
+```
+
+# diet stromal cell
+
+```{r}
+obj <- seurat_Stromal
+## extract unique group info
+meta <- obj@meta.data %>% transform(group = paste(SampleID, mCT, sep = '_'))
+groupList <- unique(meta$group)
+## down-sample
+metaDiet <- lapply(groupList, function(x){
+                    groupMeta <- meta %>% subset(group == x)
+                    Ncell <- nrow(groupMeta)
+                    if(Ncell > 100){
+                        groupMeta <- groupMeta[sample(Ncell, 100), ]
+                    }
+                    return(groupMeta)
+                }) %>% do.call(rbind, .)
+## filter
+obj.diet <- obj %>% subset(cells = rownames(metaDiet))
+obj.diet
+```
+
+```{r, results="hide"}
+## run UMAP
+obj.diet <- obj.diet %>%
+            # NormalizeData(normalization.method = "LogNormalize", scale.factor = 10000, verbose = F) %>%
+            FindVariableFeatures(selection.method = "vst", nfeatures = 1000, verbose = F) %>%
+            ScaleData(vars.to.regress = c("nCount_RNA"), verbose = F) %>%
+            RunPCA(verbose = F)
+obj.diet <- obj.diet %>% harmony::RunHarmony(group.by.vars = "Cohort", plot_convergence = TRUE)
+## cluster
+nPC <- min(PC_selection_harmony(obj.diet)$PCselect)
+obj.diet <- obj.diet %>% 
+             RunUMAP(reduction = "harmony", dims = 1:nPC, umap.method = "uwot") %>%
+             RunTSNE(reduction = "harmony", dims = 1:nPC)
+obj.diet@meta.data %>% head(n = 2)
+```
+
+```{r}
+options(repr.plot.height = 5, repr.plot.width = 23) 
+select <- 'umap'
+DimPlot_scCustom(obj.diet, pt.size = .1, group.by = "gCT", reduction = select, label = F, label.size = 4, colors_use = pal_igv("default")(51))|
+DimPlot_scCustom(obj.diet, pt.size = .1, group.by = "mCT", reduction = select, label = TRUE, label.size = 4, colors_use = pal_igv("default")(51))|
+DimPlot_scCustom(obj.diet, pt.size = .1, group.by = "Cohort", reduction = select, label = TRUE, label.size = 4, colors_use = pal_igv("default")(51))|
+DimPlot_scCustom(obj.diet, pt.size = 1, group.by = "Sex", label = TRUE, label.size = 4, colors_use = pal_igv("default")(51))
+```
+
+# save
+
+```{r}
+saveRDS(obj.diet, 'obj.StromalCell.diet.rds')
+```
+

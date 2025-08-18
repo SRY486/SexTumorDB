@@ -1,0 +1,375 @@
+---
+title: An R Markdown document converted from "BLCA_Gouin2021_process.ipynb"
+output: html_document
+---
+
+# load data
+
+```{r}
+# load h5ad: 25 MICA patients
+adata <- read_h5ad('/project/sex_cancer/data/BLCA_Gouin2021/GSE169379_MIBC_snSeq.h5ad')
+adata
+
+exp <- adata$X %>% t()
+meta <- adata$obs
+table(rownames(adata$X) == rownames(adata))
+summary(meta)
+```
+
+```{r}
+# load h5ad: 4 healthy donors
+adata2 <- anndata::read_h5ad('/project/sex_cancer/data/BLCA_Gouin2021/GSE169379_non_tumor_snSeq.h5ad')
+adata2
+
+exp2 <- adata2$X %>% t()
+meta2 <- adata2$obs
+table(rownames(adata2$X) == rownames(adata2))
+summary(meta2)
+```
+
+```{r}
+# combine expreesion matrix
+exp.all <- cbind(exp, exp2)
+dim(exp.all)
+```
+
+```{r}
+# combine meta.data
+meta.all <- meta2 %>% 
+            transform(subtype = SubType_Normal, 
+                      initial_celltype = SubType_Normal, 
+                      celltype = SubType_Normal, 
+                      hash_ID = rownames(.),
+                      Patient = strsplit2(rownames(.), split = '_')[,1]) %>%
+            dplyr::select(-'SubType_Normal') %>%
+            rbind(meta) %>%
+            .[colnames(exp.all),]
+
+## de-factor
+meta.all <- meta.all %>% mutate_if(~!is.numeric(.), ext_list)
+```
+
+## trans into Seurat object
+
+```{r}
+obj.BLCA <- CreateSeuratObject(counts = exp.all, meta.data = meta.all, 
+                               project = 'BLCA_Gouin2021',
+                               min.cells = 0, min.features = 0)
+length(unique(obj.BLCA$Patient))
+```
+
+## add clinical info
+
+```{r, results="hide"}
+sample_info_T <- openxlsx::read.xlsx("/project/sex_cancer/data/BLCA_Gouin2021/patient_infomation_BLCA.xlsx") ## supp table 1
+sample_info_T <- sample_info_T %>% 
+                 subset(Patient %in% obj.BLCA$Patient) %>% 
+                 dplyr::rename(c('StageI' = 'Stage', 'DonorID' = 'Cohort_ID')) %>%
+                 transform(SampleType = 'tumor') %>%
+                 dplyr::select(-c("Sex_estimate", 'Tobacco_use', 'Dead'))
+sample_info_N <- data.frame(Patient = c('A', 'B', 'C', 'D'), DonorID = c('A', 'B', 'C', 'D'), 
+                            Grade = NA, Invasive = NA, Recurrence = NA, StageI = 'Normal', SampleType = 'normal',
+                            Recurrence_days = NA, Outcome = NA)
+sample_info <- rbind(sample_info_T, sample_info_N)
+```
+
+```{r}
+obj.BLCA@meta.data <- obj.BLCA@meta.data %>%
+                      transform(barcode = rownames(.), barcode2 = rownames(.)) %>%
+                      merge(sample_info, ., by = 'Patient', all = TRUE) %>%
+                      dplyr::select(-c('hash_ID', 'orig.ident', 'scVI_vanilla_leiden', 'batch')) %>%
+                      column_to_rownames('barcode2') %>%
+                      dplyr::rename(c('SampleID' = 'Patient')) %>%
+                      .[colnames(obj.BLCA),]
+obj.BLCA@meta.data %>% head(n = 2)
+```
+
+# evaluate sample sex
+
+```{r}
+DotPlot(obj.BLCA, features = c('XIST', "RPS4Y1"), group.by = 'SampleID')+
+coord_flip()+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+# extract chrX/chrY genes
+hg38 <- get_map('/refdata-gex-GRCh38-2020-A/genes/genes.gtf')
+chrY <- setdiff(subset(hg38, chr == 'chrY')$gene_name, subset(hg38, chr != 'chrY')$gene_name)
+chrY <- intersect(chrY, rownames(obj.BLCA))
+```
+
+```{r}
+obj.BLCA <- obj.BLCA %>% 
+            PercentageFeatureSet(features = 'XIST', col.name = 'Female_XIST') %>% 
+            PercentageFeatureSet(features = chrY, col.name = 'Male_chrY')
+obj.BLCA@meta.data %>% head(n = 2)
+```
+
+```{r, results="hide"}
+sex_ratio <- lapply(unique(obj.BLCA$SampleID), function(x){
+                F_ratio <- nrow(obj.BLCA@meta.data %>% subset(Female_XIST>0 & SampleID == x))/nrow(obj.BLCA@meta.data %>% subset(SampleID == x))
+                M_ratio <- nrow(obj.BLCA@meta.data %>% subset(Male_chrY>0 & SampleID == x))/nrow(obj.BLCA@meta.data %>% subset(SampleID == x))
+                data.frame(F_ratio = F_ratio, M_ratio = M_ratio, SampleID = x)
+             }) %>% powerjoin::power_full_join(by = c('F_ratio', 'M_ratio', 'SampleID'))
+sex_ratio <- sex_ratio %>% 
+             mutate(sex = case_when((F_ratio > 0.8 & M_ratio < 0.5) ~ "F",
+                                    (F_ratio < 0.5 & M_ratio > 0.8) ~ 'M',
+                                    TRUE ~ 'Unassigned')) 
+```
+
+```{r}
+# filter sample
+obj.BLCA.sex <- obj.BLCA %>% subset(SampleID %in% subset(sex_ratio, sex %in% c('M', 'F'))$SampleID)
+obj.BLCA.sex@meta.data <- obj.BLCA.sex@meta.data %>% 
+                          transform(Sex = ifelse(SampleID %in% subset(sex_ratio, sex == 'M')$SampleID, 'M', 'F')) %>%
+                          transform(barcode = rownames(.))
+obj.BLCA.sex@meta.data %>% head(n = 2)
+```
+
+```{r}
+options(repr.plot.height = 4, repr.plot.width = 8)
+p <- VlnPlot(obj.BLCA.sex, features = c('Female_XIST', 'Male_chrY'), pt.size = 0, group.by = 'SampleID', slot = 'counts', split.plot = F, split.by = 'Sex', stack = TRUE, flip = T)+
+     scale_fill_manual(values = c("F" = '#E73a36', "M" = '#388ABA'))+
+     scale_y_continuous(breaks = c(1,2))+
+     labs(x = 'Patient', y = 'Signature expression')+
+     basic_theme+
+     theme(legend.key.width = unit(0.1,"inches"),
+           legend.key.height = unit(0.1,"inches"),
+           legend.position = c(0.05, 0.9))
+p
+
+ggsave('BLCA_Gouin21.Sex_estimate.pdf',
+       egg::set_panel_size(p, height=unit(1, "cm"), width=unit(4, "cm")), 
+       width = 10, height = 10, units = 'cm', dpi = 300)
+```
+
+```{r}
+obj.BLCA <- obj.BLCA %>% NormalizeData(normalization.method = "LogNormalize", scale.factor = 10000, verbose = F)
+view_deg <- obj.BLCA %>% 
+            FindMarkers(ident.1 = obj.BLCA %>% subset(subtype == 'Normal_Neuronal') %>% colnames(), 
+                        ident.2 = obj.BLCA %>% subset(subtype != 'Normal_Neuronal') %>% colnames())
+```
+
+```{r, results="hide"}
+view_deg %>% subset(p_val_adj<0.05 & p_val<0.05) %>% .[order(-.$avg_log2FC),]
+```
+
+# cell type annotation
+
+## assign oCT
+
+```{r}
+options(repr.plot.height = 4, repr.plot.width = 20)
+DotPlot(obj.BLCA, features = c('CDH19', 'SCN7A', 'NRXN1'), group.by = 'subtype')+coord_flip()+theme(axis.text.x = element_text(angle = 90, hjust = 0))
+```
+
+```{r}
+obj.BLCA@meta.data  <-  obj.BLCA@meta.data %>%
+                        mutate(oCT = case_when(subtype %in% c('CDH12_Epithelial', 'KRT13_Epithelial', 'KRT6A_Epithelial', 'UPK_Epithelial', 'Cycling_Epithelial', 
+                                                              'Normal_Umbrella_Intermediate', 'Normal_Basal_Intermediate', 'Normal_CDH12', 'Normal_KRT7_KRT13_Basal') ~ 'Epi',
+                                               subtype %in% c('ACTA2_Fibroblast', 'PDPN_Fibroblast', 'PDGFRB_Fibroblast', 'FAP_Fibroblast',
+                                                              'Normal_Fibroblast_1', 'Normal_Fibroblast_2') ~ 'Fibro',
+                                               subtype %in% c('Endothelial', 'Normal_Endothelial_1') ~ 'Endo',
+                                               subtype %in% c('Inflam_Macrophage', 'MHCII_Macrophage') ~ 'Mph',
+                                               subtype %in% c('Naive_Tcell') ~ 'Tnaive',
+                                               subtype %in% c('Treg') ~ 'Treg',
+                                               subtype %in% c('CD8T') ~ 'CD8T', 
+                                               subtype %in% c('CD20_Bcell', 'Normal_Bcell') ~ 'B',
+                                               subtype %in% c('Plasma_Bcell') ~ 'Plasma', 
+                                               subtype %in% c('Dendritic_cell') ~ 'DC', 
+                                               subtype %in% c('Normal_Smooth_muscle') ~ 'SMC', 
+                                               subtype %in% c('Normal_Mast_cell') ~ 'Mast',
+                                               subtype %in% c('Normal_Tcell') ~ 'T',
+                                               subtype %in% c('Normal_Myeloid') ~ 'Myeloid',
+                                               subtype %in% c('Normal_Neuronal') ~ 'Neuron',
+                                               TRUE ~ 'Others'))
+obj.BLCA@meta.data %>% head(n = 2)
+```
+
+```{r, results="hide"}
+table(obj.BLCA$subtype, obj.BLCA$oCT)
+```
+
+# run UMAP
+
+```{r}
+marker_list <- c('PTPRC', 'CD3D', 'CD3E', 'CD8A', 'CD4', 'TRAC', 'TRDC', 'IL7R', 'CTLA4', 'FOXP3', 'NKG7', 'NCAM1', 'KLRD1', ## T/NK
+                 'CD79A', 'CD79B', 'MS4A1', 'IGHM', 'IGHD', 'IGKC', 'JCHAIN', # B/Plasma
+                 'CD163','CD68','ITGAX','MARCO', 'MRC1', 'SLC40A1', 'SPP1', ## Mph
+                 'S100A8', 'S100A9', 'THBS1', 'CD14', 'FCGR3A','FCN1', 'VCAN', ## Myeloid 
+                 'CD1C', 'IDO1', 'CLEC4C', 'CSF2RA', 'LAMP3', 'CLEC10A', ## DC
+                 "CPA3", "CST3", "TPSAB1", "TPSB2")
+marker_list <- marker_list[marker_list %in% rownames(obj.BLCA)]
+```
+
+```{r, results="hide"}
+sampleList <- unique(obj.BLCA$SampleID)
+obj.anchor <- lapply(sampleList, function(sampleID){
+                          obj <- obj.BLCA %>% 
+                                 subset(SampleID == sampleID) %>%
+                                 NormalizeData(normalization.method = "LogNormalize", scale.factor = 10000, verbose = F) %>%
+                                 FindVariableFeatures(selection.method = "vst", nfeatures = 2000, verbose = F) 
+                          VariableFeatures(obj) <- union(VariableFeatures(obj), marker_list)
+                          obj <- obj %>%
+                                 ScaleData(vars.to.regress = c("nCount_RNA"), verbose = F)
+                          return(obj)
+                 })
+obj.anchor
+
+names(obj.anchor) <- sampleList
+obj.anchor
+
+## FindIntegrationAnchors
+obj.anchor <- FindIntegrationAnchors(obj.anchor, dims = 1:30)
+obj.anchor <- IntegrateData(anchorset = obj.anchor, dims = 1:30, verbose = F)
+DefaultAssay(obj.anchor)
+
+## scale data+runPCA
+obj.anchor <- obj.anchor %>%
+              ScaleData(verbose = FALSE) %>% 
+              RunPCA(npcs = 50, verbose = F)
+
+## view
+options(repr.plot.height = 4, repr.plot.width = 8)
+PC_selection(obj.anchor)
+ElbowPlot(obj.anchor, reduction = "pca", ndims = 50)
+
+#### Clustering
+set.seed(486)
+
+select <- 1:(PC_selection(obj.anchor)$PCselect %>% min())
+obj.anchor <- obj.anchor %>% 
+              RunUMAP(reduction = "pca", dims = select, umap.method = "uwot") %>%
+              RunTSNE(reduction = "pca", dims = select)
+obj.anchor
+```
+
+```{r}
+options(repr.plot.height = 5, repr.plot.width = 20)
+select <- 'umap'
+DimPlot_scCustom(obj.anchor, reduction = select, pt.size = 1, group.by = "oCT", label = F, label.size = 8, colors_use = pal_igv("default")(51))|
+DimPlot_scCustom(obj.anchor, reduction = select, pt.size = 1, group.by = "SampleType", label = TRUE, label.size = 4, colors_use = pal_igv("default")(51))|
+DimPlot_scCustom(obj.anchor, reduction = select, pt.size = 1, group.by = "SampleID", label = F, label.size = 8, colors_use = pal_igv("default")(51))
+```
+
+## immune annotation
+
+```{r}
+DefaultAssay(obj.anchor) <- 'RNA'
+```
+
+```{r}
+obj.BLCA.immune <- obj.anchor %>% subset(oCT %in% c('Mph', 'Tnaive', 'Treg', 'B', 'CD8T', 'Plasma', 'DC', 'T', 'Myeloid', 'Mast'))
+obj.BLCA.immune
+DefaultAssay(obj.BLCA.immune) <- 'integrated'
+
+obj.BLCA.immune <- obj.BLCA.immune %>% FindVariableFeatures(selection.method = "vst", nfeatures = 1000, verbose = F) 
+VariableFeatures(obj.BLCA.immune) <- union(VariableFeatures(obj.BLCA.immune), marker_list)
+obj.BLCA.immune <- obj.BLCA.immune %>%
+                   ScaleData(verbose = FALSE, vars.to.regress = c("nCount_RNA", "percent.mt")) %>% 
+                   RunPCA(npcs = 50, verbose = F)
+
+## view
+options(repr.plot.height = 3, repr.plot.width = 8)
+PC_selection(obj.BLCA.immune)
+ElbowPlot(obj.BLCA.immune, reduction = "pca", ndims = 50)
+```
+
+```{r, results="hide"}
+select <- 1:(PC_selection(obj.BLCA.immune)$PCselect %>% min())
+obj.BLCA.immune <- obj.BLCA.immune %>%
+                   RunUMAP(reduction = "pca", dims = select, umap.method = "uwot") %>%
+                   RunTSNE(reduction = "pca", dims = select) %>%
+                   FindNeighbors(reduction = "pca", dims = select) %>%
+                   FindClusters(resolution = 0.1) %>% FindClusters(resolution = 0.2) %>% FindClusters(resolution = 0.3) %>% FindClusters(resolution = 0.4) %>% FindClusters(resolution = 0.5) %>% FindClusters(resolution = 0.6)
+obj.BLCA.immune
+
+colnames(obj.BLCA.immune@meta.data) <- colnames(obj.BLCA.immune@meta.data) %>% gsub("integrated_snn_res.0.", "i0", .)
+names(obj.BLCA.immune@meta.data)
+```
+
+```{r}
+options(repr.plot.height = 5, repr.plot.width = 30)
+select <- 'umap'
+DimPlot_scCustom(obj.BLCA.immune, reduction = select, pt.size = 1, group.by = "oCT", label = T, label.size = 3, colors_use = pal_igv("default")(51))|
+DimPlot_scCustom(obj.BLCA.immune, reduction = select, pt.size = 1, group.by = "i06", label = T, label.size = 8, colors_use = pal_igv("default")(51))|
+DimPlot_scCustom(obj.BLCA.immune, reduction = select, pt.size = 1, group.by = "SampleType", label = T, label.size = 8, colors_use = pal_igv("default")(51))|
+DimPlot_scCustom(obj.BLCA.immune, reduction = select, pt.size = 1, group.by = "SampleID", label = F, label.size = 8, colors_use = pal_igv("default")(51))
+```
+
+```{r}
+DotPlot(obj.BLCA.immune, features = marker_list, group.by = 'i06')+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r, results="hide"}
+## marker expression
+Idents(obj.BLCA.immune) <- factor(obj.BLCA.immune$i06, levels = 11:0)
+cluster_deg <- FindAllMarkers(obj.BLCA.immune, assay = "RNA", slot = "data",
+                              logfc.threshold = 0.25, min.pct = 0.1, test.use = "wilcox")
+rownames(cluster_deg) <- NULL
+```
+
+```{r}
+## assign dCT/mCT/gCT
+obj.BLCA.immune@meta.data <-obj.BLCA.immune@meta.data %>%
+                            mutate(dCT = case_when(i06 %in% c("0") ~ "Treg",
+                                                   i06 %in% c("2", "9") ~ "CD8T",
+                                                   i06 %in% c("8") ~ "Tnaive",
+                                                   i06 %in% c("3",  "6") ~ "B",
+                                                   i06 %in% c("1", "5") ~ "Mph",
+                                                   i06 %in% c("4") ~ "DC",
+                                                   i06 %in% c("11") ~ "pDC",
+                                                   i06 %in% c("10") ~ "Mast",
+                                                   i06 %in% c("7") ~ "Plasma",
+                                                   TRUE ~ 'Others'))
+
+obj.BLCA.immune@meta.data <- obj.BLCA.immune@meta.data %>%
+                             mutate(mCT = case_when(dCT %in% c("DC", "pDC") ~ "DC",
+                                                    dCT %in% c("B", "Plasma") ~ "B",
+                                                    TRUE ~ dCT))
+
+obj.BLCA.immune@meta.data <- obj.BLCA.immune@meta.data %>% transform(gCT = 'Immune')
+```
+
+```{r}
+options(repr.plot.height = 5, repr.plot.width = 30)
+select <- 'umap'
+DimPlot_scCustom(obj.BLCA.immune, reduction = select, pt.size = 1, group.by = "oCT", label = T, label.size = 3, colors_use = pal_igv("default")(51))|
+DimPlot_scCustom(obj.BLCA.immune, reduction = select, pt.size = 1, group.by = "dCT", label = T, label.size = 8, colors_use = pal_igv("default")(51))|
+DimPlot_scCustom(obj.BLCA.immune, reduction = select, pt.size = 1, group.by = "mCT", label = T, label.size = 8, colors_use = pal_igv("default")(51))|
+DimPlot_scCustom(obj.BLCA.immune, reduction = select, pt.size = 1, group.by = "SampleID", label = F, label.size = 8, colors_use = pal_igv("default")(51))
+```
+
+```{r}
+## merge together
+obj.BLCA.others <- obj.anchor %>% subset(oCT %in% c('Mph', 'Tnaive', 'Treg', 'B', 'CD8T', 'Plasma', 'DC', 'T', 'Myeloid', 'Mast') == F)
+obj.BLCA.others
+
+obj.BLCA.others@meta.data <- obj.BLCA.others@meta.data %>%
+                             transform(dCT = oCT, mCT = oCT) %>%
+                             mutate(gCT = case_when(oCT %in% c('Epi') ~ 'Tumor',
+                                                    oCT %in% c('Endo', 'Fibro', 'Neuron', 'SMC') ~ 'Stromal'))
+obj.BLCA.others@meta.data %>% head(n = 1)
+```
+
+```{r}
+obj.BLCA <- obj.anchor
+obj.BLCA@meta.data <- rbind(obj.BLCA.immune@meta.data %>% .[,names(obj.BLCA.others@meta.data)], obj.BLCA.others@meta.data)[colnames(obj.BLCA),]
+```
+
+```{r}
+options(repr.plot.height = 5, repr.plot.width = 30)
+select <- 'umap'
+DimPlot_scCustom(obj.BLCA, reduction = select, pt.size = 1, group.by = "gCT", label = T, label.size = 8, colors_use = pal_igv("default")(51))|
+DimPlot_scCustom(obj.BLCA, reduction = select, pt.size = 1, group.by = "mCT", label = T, label.size = 5, colors_use = pal_igv("default")(51))|
+DimPlot_scCustom(obj.BLCA, reduction = select, pt.size = 1, group.by = "dCT", label = F, label.size = 5, colors_use = pal_igv("default")(51))|
+DimPlot_scCustom(obj.BLCA, reduction = select, pt.size = 1, group.by = "oCT", label = F, label.size = 8, colors_use = pal_igv("default")(51))|
+DimPlot_scCustom(obj.BLCA, reduction = select, pt.size = 1, group.by = "SampleType", label = F, label.size = 8, colors_use = pal_igv("default")(51))
+```
+
+# save
+
+```{r}
+saveRDS(obj.BLCA, 'obj.BLCA.rds')
+```
+

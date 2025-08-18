@@ -1,0 +1,50 @@
+---
+title: An R Markdown document converted from "seurat_meta_extract.ipynb"
+output: html_document
+---
+
+# load-extract meta.data
+
+```{r}
+objList <- list.files('/project/sex_cancer/data/step2_standardization', recursive = T, full.names = F, pattern = 'obj.')
+objList
+```
+
+```{r}
+metaList <- lapply(objList, function(x){
+                     obj <- readRDS(x)
+                     obj@meta.data
+            })
+```
+
+# Cell metadata
+
+```{r}
+meta_cell <- metaList %>% do.call(rbind, .)
+meta_cell <- meta_all %>% mutate_if(~!is.numeric(.), ext_list)
+
+saveRDS(meta_cell, 'metadata_cell.rds')
+write.csv(meta_cell, 'metadata_cell.csv', row.names = FALSE, quote = FALSE)
+```
+
+# Sample metadata
+
+```{r}
+meta_sample <- meta_cell %>% dplyr::select(c("Cohort", "SampleID", "SampleType", "DonorID", "Sex", "Chemistry", "Tissue")) %>% .[!duplicated(.$SampleID),]
+rownames(meta_sample) <- NULL
+
+saveRDS(meta_sample, "metadata_sample.rds")
+write.csv(meta_sample, "metadata_sample.csv", row.names = FALSE, quote = FALSE)
+```
+
+# Cohort statistics
+
+```{r, results="hide"}
+meta_statistics <- table(meta_sample$Cohort, meta_sample$Sex, meta_sample$SampleType) %>% as.data.frame() %>% subset(Freq>0)
+names(meta_statistics) <- c('Cohort', 'Sex', 'SampleType', 'Nsample')  
+meta_statistics <- meta_statistics %>% .[order(.$Cohort, .$SampleType, .$Sex),]
+
+write.csv(meta_statistics, "metadata_cohort.csv", row.names = FALSE, quote = FALSE)
+saveRDS(meta_statistics, "metadata_cohort.rds")
+```
+

@@ -1,0 +1,154 @@
+---
+title: An R Markdown document converted from "FL_Han2022_process.ipynb"
+output: html_document
+---
+
+# load data
+follicluar lymphoma - B-cell lymphoma  
+raw counts not provided in the original article
+
+```{r}
+adata <- read_h5ad('/project/sex_cancer/data/FL_Han2022/19dc3c7f-1318-401d-b885-e046fd96a13e.h5ad')
+exp <- adata$X %>% t()
+meta <- adata$obs
+
+## create seurat object
+obj.FL <- CreateSeuratObject(counts = exp,
+                             meta.data = meta,
+                             project = "FL_Han2022", assay = "RNA", 
+                             min.cells = 0, min.features = 0)
+
+## add UMAP embedding
+obj.FL[['umap']] <- CreateDimReducObject(embeddings = adata$obsm$X_UMAP  %>% {colnames(.) <- c('UMAP_1', 'UMAP_2'); .}, 
+                                         key = 'UMAP_', assay = 'RNA')
+obj.FL@meta.data <- obj.FL@meta.data %>% mutate_if(~!is.numeric(.), ext_list)
+```
+
+```{r}
+## add sample info
+info <- read_xlsx('/project/sex_cancer/data/FL_Han2022/HanPatientInfo.xlsx',sheet = 2)
+info$Sample_id <- unique(obj.FL@meta.data$sample_id)
+
+meta <- obj.FL@meta.data %>% rownames_to_column('barcode') %>%
+        merge(info, by = 'sample_id',all = TRUE)
+names(meta)[26]='Sex'
+meta=meta[,-c(39:43)]
+```
+
+# modify meta.data
+
+```{r}
+obj.FL@meta.data <- obj.FL@meta.data %>%
+                    dplyr::rename(c('DonorID' = 'SampleID', 'Tissue' = 'tissue', 'Disease' = 'disease')) %>%
+                    dplyr::rename(c('SampleID' = 'sample_id', 'percent.mt' = 'Ratio.MT')) %>%
+                    transform(SampleType = ifelse(Disease == 'follicular lymphoma', 'tumor', 'normal')) %>%
+                    transform(Sex = ifelse(Sex == 'Female', 'F', 'M')) %>%
+                    dplyr::rename(c('Chemistry' = 'assay'))  %>% 
+                    transform(Cohort = 'FL_Han2022') 
+```
+
+# trans ENSG to symbol
+
+```{r}
+hg19 <- get_map('/project/sex_cancer/data/Homo_sapiens.GRCh37.87.gtf') %>% 
+        dplyr::select(c('gene_id', 'gene_name'))
+
+## map ENSEMBL ID to gene symbol
+exp <- GetAssayData(obj.FL, assay = 'RNA', slot = 'counts')
+gene_keep <- intersect(rownames(exp), hg19$gene_id)
+exp <- exp[gene_keep,]
+## merge symbol info
+exp <- hg19 %>% column_to_rownames('gene_id') %>% .[gene_keep,] %>% cbind(., as_matrix(exp))
+colnames(exp)[1] <- 'gene_symbol'
+exp[1:6, 1:6]
+
+## aggregate symbols with the same ENSG
+exp <- exp %>% as.data.frame()
+exp <- exp %>% mutate_at(vars(2:ncol(exp)), ~ as.numeric(.))
+exp <- aggregate(. ~ gene_symbol, data = exp, FUN = max)
+exp <- exp %>% column_to_rownames('gene_symbol') %>% .[,colnames(obj.FL)]
+```
+
+```{r}
+obj.FL <- CreateSeuratObject(counts = exp, meta.data = obj.FL@meta.data[colnames(obj.FL),], min.cells = 0, min.features = 0, project = 'FL_Han2022')
+obj.FL
+```
+
+# cell type annotation
+
+## assign dCT
+
+```{r}
+obj.FL@meta.data <- obj.FL@meta.data %>% 
+                        mutate(dCT = case_when(oCT %in% c('Malignant') ~ 'Malignant',
+                                               oCT %in% c('CD4_CTL', 'CD4_Naive', 'CD4_Tfh', 'CD4Proliferating') ~ 'CD4T',
+                                               oCT %in% c('CD4_Treg') ~ 'Treg',
+                                               oCT %in% c('CD8_Naive', 'CD8_Exh', 'CD8_Eff', 'CD8Proliferating') ~ 'CD8T',
+                                               oCT %in% c('Tcell_other') ~ 'T_others',
+                                               oCT %in% c('NKT') ~ 'NKT',
+                                               oCT %in% c('NormalB') ~ 'B',
+                                               oCT %in% c('NormalPlasma') ~ 'Plasma',
+                                               oCT %in% c('Myeloid') ~ 'Myeloid',
+                                               oCT %in% c('pDC') ~ 'pDC',
+                                               oCT %in% c('fDC') ~ 'fDC',
+                                               oCT %in% c('Erythrocyte') ~ 'Erythrocyte',
+                                               TRUE ~ 'Others'))
+```
+
+```{r}
+## marker expreesion
+marker_list <- c('PTPRC', 'LYN', 'HLA-DQB1',
+                 'CD3D', 'CD3E', 'CD3G', 'CD4', 'CTLA4', 'FOXP3',
+                 'CD8A', 'CD8B', 'GZMB', 'GNLY', 'PRF1', 'NKG7', 'KLRD1', 'NCAM1',
+                 'CD79A', 'MS4A1')
+
+options(repr.plot.height = 5, repr.plot.width = 12)
+VlnPlot(obj.FL, group.by = 'oCT',
+        features = marker_list,
+        pt.size = 0, cols = pal_igv("default")(51),
+        slot = 'counts',assay = 'RNA', raster=FALSE, stack = TRUE, flip = TRUE)+
+theme(legend.position = 'none')
+```
+
+## assign mCT
+
+```{r}
+obj.FL@meta.data <- obj.FL@meta.data %>% 
+                        mutate(mCT = case_when(dCT %in% c('CD4T', 'CD8T', 'T_others', 'NKT', 'Treg', 'Malignant', 'B', 'Plasma') ~ 'Lymphoid',
+                                               dCT %in% c('Myeloid', 'pDC', 'fDC') ~ 'Myeloid',
+                                               dCT %in% c('Erythrocyte') ~ 'Erythroid',
+                                               TRUE ~ 'Others'))
+```
+
+## assign gCT
+
+```{r}
+obj.FL@meta.data <- obj.FL@meta.data %>% 
+                        mutate(gCT = case_when(dCT %in% c('B', 'Malignant', 'Plasma') ~ 'Tumor',
+                                               dCT %in% c('CD4T', 'Treg', 'T_others', 'CD8T', 'NKT', 'Myeloid', 'pDC', 'fDC', 'Erythrocyte') ~ 'Immune',
+                                               TRUE ~ 'Others'))
+```
+
+```{r}
+options(repr.plot.height = 5, repr.plot.width = 30)
+select <- 'umap'
+DimPlot_scCustom(obj.FL, pt.size = .1, group.by = "gCT", reduction = select, label = TRUE, label.size = 4, colors_use = pal_igv("default")(51))|
+DimPlot_scCustom(obj.FL, pt.size = .1, group.by = "mCT", reduction = select, label = TRUE, label.size = 4, colors_use = pal_igv("default")(51))|
+DimPlot_scCustom(obj.FL, pt.size = .1, group.by = "dCT", reduction = select, label = TRUE, label.size = 4, colors_use = pal_igv("default")(51))|
+DimPlot_scCustom(obj.FL, pt.size = .1, group.by = "oCT", reduction = select, label = TRUE, label.size = 4, colors_use = pal_igv("default")(51))
+```
+
+# filte sample
+
+```{r}
+## filter out treated samples
+obj.FL <- obj.FL %>% subset(Prior.lines.of.therapy == 0 | Disease == 'Normal')
+obj.FL
+```
+
+## save
+
+```{r}
+saveRDS(obj.FL, 'obj.FL.use.rds')
+```
+
