@@ -1,9 +1,9 @@
-# SexTumorDB
+# Decription
 SexTumorDB is a comprehensive resource of sex-dependent tumor landscape at single-cell resolution. This repository contains the codes used to develop the SexTumorDB, including the scripts for data processing, cell annotation and data standardization, integration. 
-The resultant SexTumorDB datasets can be found in the Zenodo repository (https://doi.org/10.5281/zenodo.16742263). 
-
+The resultant SexTumorDB datasets can be found in the Zenodo repository (https://doi.org/10.5281/zenodo.16742263)
 Below is an overview of the cancer datasets compiled in the SexTumorDB.
-[github.tif](https://github.com/user-attachments/files/21910204/github.tif)
+
+![Screenshot_2](https://github.com/SRY486/SexTumorDB/Data overview/github.tif)
 
 # Requirements for dependencies
 The following dependencies are needed to run the scripts: (R version 4.2.3 recommended)
