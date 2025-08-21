@@ -4,7 +4,7 @@ The resultant SexTumorDB datasets can be found in the Zenodo repository (https:/
 
 # Data overview of SexTumorDB
 Below is an overview of the SexTumorDB datasets
-![Image](https://github.com/SRY486/SexTumorDB/blob/main/Data/DataOverview.png)  
+![Image](https://github.com/SRY486/SexTumorDB/blob/main/Data/DataOverview.png)
 ![Image](https://github.com/SRY486/SexTumorDB/blob/main/Data/DataStatistics.png)
 
 # Requirements for dependencies
