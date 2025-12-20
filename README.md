@@ -3,6 +3,10 @@ SexTumorDB is a comprehensive resource of sex-dependent tumor landscape at singl
 The resultant SexTumorDB datasets can be found in the Zenodo repository (https://doi.org/10.5281/zenodo.16742263)
         
         
+        
+        
+        
+        
 # Data overview of SexTumorDB
 Below is an overview of the SexTumorDB datasets
 ![Image](https://github.com/SRY486/SexTumorDB/blob/main/DataOverview/DataOverview.png)
@@ -25,3 +29,5 @@ dplyr v1.1.0
 xgboost v1.7.8.1  
 ShinyCell v2.1.0  
 shiny v1.7.4
+COSG v0.9.0
+ligi v1.0
