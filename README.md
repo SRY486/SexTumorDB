@@ -7,6 +7,8 @@ The resultant SexTumorDB datasets can be found in the Zenodo repository (https:/
         
         
         
+        
+        
 # Data overview of SexTumorDB
 Below is an overview of the SexTumorDB datasets
 ![Image](https://github.com/SRY486/SexTumorDB/blob/main/DataOverview/DataOverview.png)
@@ -28,6 +30,6 @@ magrittr v2.0.3
 dplyr v1.1.0  
 xgboost v1.7.8.1  
 ShinyCell v2.1.0  
-shiny v1.7.4
-COSG v0.9.0
-ligi v1.0
+shiny v1.7.4  
+COSG v0.9.0  
+lisi v1.0
