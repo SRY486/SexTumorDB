@@ -9,12 +9,14 @@ The resultant SexTumorDB datasets can be found in the Zenodo repository (https:/
         
         
         
+        
+        
 # Data overview of SexTumorDB
 Below is an overview of the SexTumorDB datasets
 ![Image](https://github.com/SRY486/SexTumorDB/blob/main/DataOverview/DataOverview.png)
 
 # Requirements for dependencies
-The following dependencies are needed to run the scripts: (R version 4.2.3 recommended)
+The following dependencies are needed to run the scripts: (R version 4.2.3 recommended)  
 Seurat	v4.3.0  
 anndata	v0.8.0  
 MatchIt	v4.7.1  
