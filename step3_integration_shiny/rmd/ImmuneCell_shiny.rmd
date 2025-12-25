@@ -1,0 +1,43 @@
+```R
+library(shiny)
+library(Seurat)
+library(ShinyCell)
+library(stringr)
+```
+
+# load data
+
+
+```R
+obj <- readRDS('obj.ImmuneCell.diet.rds')
+obj@meta.data %>% head(n = 2)
+conf <- createConfig(obj)
+```
+
+# make shiny app
+
+
+```R
+makeShinyApp(obj, 
+             conf, 
+             gene.mapping = FALSE,
+             gex.slot = "data",
+             shiny.title = "SexTumorDB: Immune cell landscape",
+             shiny.dir = "ImmuneShiny/",
+             shiny.footnotes = "Datasets covering the total tumor microenvironment can be accessed freely from Zenodo platform",
+             enableSubset = TRUE,
+             defPtSiz = .5
+            )
+```
+
+
+```R
+rsconnect::setAccountInfo(name='sextumordb',
+                          token='<SECRET>',
+                          secret='<SECRET>')
+```
+
+
+```R
+rsconnect::deployApp('ImmuneShiny/', account = 'sextumordb', appName = "immune")
+```

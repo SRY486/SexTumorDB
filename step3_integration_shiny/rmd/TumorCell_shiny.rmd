@@ -1,0 +1,42 @@
+```R
+library(shiny)
+library(Seurat)
+library(ShinyCell)
+library(stringr)
+```
+
+# load load
+
+
+```R
+obj <- readRDS('obj.TumorCell.diet.rds')
+obj@meta.data %>% head(n = 2)
+conf <- createConfig(obj)
+```
+
+
+```R
+## make shiny app
+makeShinyApp(obj, 
+             conf, 
+             gene.mapping = FALSE,
+             gex.slot = "data",
+             shiny.title = "SexTumorDB: Tumor cell landscape",
+             shiny.dir = "TumorShiny/",
+             shiny.footnotes = "Datasets covering the total tumor microenvironment can be accessed freely from Zenodo platform",
+             enableSubset = TRUE,
+             defPtSiz = .5,
+            )
+```
+
+
+```R
+rsconnect::setAccountInfo(name='sextumordb',
+                          token='<SECRET>',
+                          secret='<SECRET>')
+```
+
+
+```R
+rsconnect::deployApp('TumorShiny/', account = 'sextumordb', appName = "tumor")
+```
